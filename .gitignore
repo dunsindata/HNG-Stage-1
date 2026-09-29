@@ -12,8 +12,12 @@ data/
 *.db-wal
 *.db-shm
 
+# Vercel CLI project link
+.vercel/
+
 # Editors / OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+.vercel

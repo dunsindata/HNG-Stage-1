@@ -4,7 +4,6 @@
   "private": true,
   "description": "A to-do list web app: Express + SQLite API with a React + TypeScript UI.",
   "type": "module",
-  "main": "src/index.js",
   "engines": {
     "node": "24.x"
   },
