@@ -9,25 +9,31 @@ import {
   messageOf,
   patchTodo,
 } from "./api";
-import type { Stats, StatusFilter, Todo, TodoDraft } from "./types";
+import type { Stats, StatusFilter, TaskStatus, Todo, TodoDraft, TodoPatch } from "./types";
 
 const SEARCH_DEBOUNCE_MS = 250;
 
-const EMPTY_STATS: Stats = { total: 0, active: 0, completed: 0 };
+const EMPTY_STATS: Stats = {
+  total: 0,
+  completed: 0,
+  in_progress: 0,
+  not_started: 0,
+  open: 0,
+};
 
 export interface UseTodos {
   todos: Todo[];
   stats: Stats;
-  status: StatusFilter;
+  filter: StatusFilter;
   query: string;
   isLoading: boolean;
   error: string | null;
-  setStatus: (status: StatusFilter) => void;
+  setFilter: (filter: StatusFilter) => void;
   setQuery: (query: string) => void;
   /** Resolves to `true` when the task was accepted, so the form knows whether to clear. */
   addTodo: (draft: TodoDraft) => Promise<boolean>;
-  toggleTodo: (todo: Todo) => void;
-  renameTodo: (id: number, title: string) => void;
+  setStatus: (todo: Todo, status: TaskStatus) => void;
+  updateTodo: (id: number, patch: TodoPatch) => void;
   removeTodo: (id: number) => void;
   clearCompletedTasks: () => void;
   reportError: (message: string) => void;
@@ -35,15 +41,15 @@ export interface UseTodos {
 }
 
 /**
- * All task state for the page: the list, the counts, the current filter and
- * search term, and the actions that mutate them. Every mutation is followed by
- * a refresh, which keeps the list and the counters consistent without the UI
- * having to mirror server state locally.
+ * All task state for the dashboard: the list, the per-state counts, the active
+ * filter and search term, and the actions that mutate them. Every mutation is
+ * followed by a refresh, which keeps the list and the donut charts consistent
+ * without the UI having to mirror server state locally.
  */
 export function useTodos(): UseTodos {
   const [todos, setTodos] = useState<Todo[]>([]);
   const [stats, setStats] = useState<Stats>(EMPTY_STATS);
-  const [status, setStatus] = useState<StatusFilter>("all");
+  const [filter, setFilter] = useState<StatusFilter>("all");
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -57,7 +63,7 @@ export function useTodos(): UseTodos {
   const refresh = useCallback(async (): Promise<void> => {
     try {
       const [list, counts] = await Promise.all([
-        fetchTodos({ status, query: search }),
+        fetchTodos({ filter, query: search }),
         fetchStats(),
       ]);
       setTodos(list);
@@ -67,7 +73,7 @@ export function useTodos(): UseTodos {
     } finally {
       setIsLoading(false);
     }
-  }, [status, search]);
+  }, [filter, search]);
 
   useEffect(() => {
     void refresh();
@@ -95,16 +101,16 @@ export function useTodos(): UseTodos {
 
   const addTodo = useCallback((draft: TodoDraft) => run(() => createTodo(draft)), [run]);
 
-  const toggleTodo = useCallback(
-    (todo: Todo) => {
-      void run(() => patchTodo(todo.id, { completed: !todo.completed }));
+  const setStatus = useCallback(
+    (todo: Todo, status: TaskStatus) => {
+      void run(() => patchTodo(todo.id, { status }));
     },
     [run],
   );
 
-  const renameTodo = useCallback(
-    (id: number, title: string) => {
-      void run(() => patchTodo(id, { title }));
+  const updateTodo = useCallback(
+    (id: number, patch: TodoPatch) => {
+      void run(() => patchTodo(id, patch));
     },
     [run],
   );
@@ -126,15 +132,15 @@ export function useTodos(): UseTodos {
   return {
     todos,
     stats,
-    status,
+    filter,
     query,
     isLoading,
     error,
-    setStatus,
+    setFilter,
     setQuery,
     addTodo,
-    toggleTodo,
-    renameTodo,
+    setStatus,
+    updateTodo,
     removeTodo,
     clearCompletedTasks,
     reportError,

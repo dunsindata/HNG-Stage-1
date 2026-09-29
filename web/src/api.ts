@@ -4,7 +4,7 @@
  * the browser ever needs and there is no CORS configuration to maintain.
  */
 
-import type { Stats, StatusFilter, Todo, TodoDraft, TodoPatch } from "./types";
+import type { Stats, StatusFilter, TaskStatus, Todo, TodoDraft, TodoPatch } from "./types";
 
 const BASE = "/api";
 
@@ -28,9 +28,11 @@ function toTodo(value: unknown): Todo {
   return {
     id: Number(value.id),
     title: String(value.title),
-    completed: value.completed === true,
+    description: typeof value.description === "string" ? value.description : null,
+    status: (value.status as TaskStatus) ?? "not_started",
     priority: (value.priority as Todo["priority"]) ?? "medium",
     due_date: typeof value.due_date === "string" ? value.due_date : null,
+    image: typeof value.image === "string" ? value.image : null,
     created_at: String(value.created_at),
     updated_at: String(value.updated_at),
     completed_at: typeof value.completed_at === "string" ? value.completed_at : null,
@@ -48,8 +50,10 @@ function toStats(value: unknown): Stats {
   if (!isRecord(value)) throw new ApiError("The server sent unexpected counts", 0);
   return {
     total: Number(value.total),
-    active: Number(value.active),
     completed: Number(value.completed),
+    in_progress: Number(value.in_progress),
+    not_started: Number(value.not_started),
+    open: Number(value.open),
   };
 }
 
@@ -91,9 +95,15 @@ function jsonInit(method: string, body: unknown): RequestInit {
 
 const ignore = () => undefined;
 
-export function fetchTodos({ status, query }: { status: StatusFilter; query: string }): Promise<Todo[]> {
+export function fetchTodos({
+  filter,
+  query,
+}: {
+  filter: StatusFilter;
+  query: string;
+}): Promise<Todo[]> {
   const params = new URLSearchParams();
-  if (status !== "all") params.set("status", status);
+  if (filter !== "all") params.set("filter", filter);
   if (query) params.set("q", query);
   const suffix = params.toString();
   return request(`/todos${suffix ? `?${suffix}` : ""}`, {}, toTodoList);

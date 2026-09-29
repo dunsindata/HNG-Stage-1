@@ -1,30 +1,26 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { App } from "./App";
-import type { Todo } from "./types";
+import type { TaskStatus, Todo } from "./types";
 
 const NOW = "2031-01-15T09:00:00Z";
+const LATER = "2031-01-17T09:00:00Z";
 
 function makeTodo(overrides: Partial<Todo> = {}): Todo {
   return {
     id: 1,
     title: "Buy milk",
-    completed: false,
+    description: null,
+    status: "not_started",
     priority: "medium",
     due_date: null,
+    image: null,
     created_at: NOW,
     updated_at: NOW,
     completed_at: null,
     ...overrides,
   };
-}
-
-/** YYYY-MM-DD in local time, avoiding the UTC shift that toISOString() applies. */
-function localIso(date: Date): string {
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${date.getFullYear()}-${month}-${day}`;
 }
 
 interface ApiCall {
@@ -36,6 +32,13 @@ interface ApiCall {
 interface FakeApi {
   calls: ApiCall[];
   state: { todos: Todo[]; rejectCreate: boolean; nextId: number };
+}
+
+/** YYYY-MM-DD in local time, avoiding the UTC shift of toISOString(). */
+function localIso(date: Date): string {
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
 }
 
 /** A tiny in-memory stand-in for the Express API. */
@@ -60,22 +63,31 @@ function installApi(initial: Todo[]): FakeApi {
 
       if (method === "GET" && url.startsWith("/api/todos")) {
         const params = new URLSearchParams(url.split("?")[1] ?? "");
-        const status = params.get("status") ?? "all";
+        const filter = params.get("filter") ?? "all";
         const term = (params.get("q") ?? "").toLowerCase();
 
         let todos = [...state.todos];
-        if (status === "active") todos = todos.filter((todo) => !todo.completed);
-        if (status === "completed") todos = todos.filter((todo) => todo.completed);
-        if (term) todos = todos.filter((todo) => todo.title.toLowerCase().includes(term));
+        if (filter === "open") todos = todos.filter((todo) => todo.status !== "completed");
+        else if (filter !== "all") todos = todos.filter((todo) => todo.status === filter);
+        if (term) {
+          todos = todos.filter(
+            (todo) =>
+              todo.title.toLowerCase().includes(term) ||
+              (todo.description ?? "").toLowerCase().includes(term),
+          );
+        }
 
         return respond({ todos });
       }
 
       if (method === "GET" && url === "/api/stats") {
+        const count = (status: TaskStatus) => state.todos.filter((t) => t.status === status).length;
         return respond({
           total: state.todos.length,
-          active: state.todos.filter((todo) => !todo.completed).length,
-          completed: state.todos.filter((todo) => todo.completed).length,
+          completed: count("completed"),
+          in_progress: count("in_progress"),
+          not_started: count("not_started"),
+          open: state.todos.filter((t) => t.status !== "completed").length,
         });
       }
 
@@ -84,8 +96,11 @@ function installApi(initial: Todo[]): FakeApi {
         const created = makeTodo({
           id: state.nextId++,
           title: body.title,
+          description: body.description ?? null,
+          status: body.status ?? "not_started",
           priority: body.priority ?? "medium",
           due_date: body.due_date ?? null,
+          image: body.image ?? null,
         });
         state.todos = [created, ...state.todos];
         return respond({ todo: created }, 201);
@@ -93,7 +108,7 @@ function installApi(initial: Todo[]): FakeApi {
 
       if (method === "POST" && url === "/api/todos/clear-completed") {
         const before = state.todos.length;
-        state.todos = state.todos.filter((todo) => !todo.completed);
+        state.todos = state.todos.filter((todo) => todo.status !== "completed");
         return respond({ deleted: before - state.todos.length });
       }
 
@@ -103,9 +118,9 @@ function installApi(initial: Todo[]): FakeApi {
         if (method === "PATCH") {
           state.todos = state.todos.map((todo) => {
             if (todo.id !== id) return todo;
-            const next: Todo = { ...todo, ...body, updated_at: NOW };
-            if (body.completed === true) next.completed_at = NOW;
-            if (body.completed === false) next.completed_at = null;
+            const next: Todo = { ...todo, ...body, updated_at: LATER };
+            if (body.status === "completed") next.completed_at = LATER;
+            if (body.status && body.status !== "completed") next.completed_at = null;
             return next;
           });
           return respond({ todo: state.todos.find((todo) => todo.id === id) });
@@ -133,157 +148,297 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("App", () => {
-  it("renders the tasks the API returns", async () => {
-    installApi([
-      makeTodo({ title: "Buy milk" }),
-      makeTodo({ id: 2, title: "Write tests", completed: true }),
-    ]);
-    render(<App />);
-
-    expect(await screen.findByText("Buy milk")).toBeTruthy();
-    expect(screen.getByText("Write tests")).toBeTruthy();
-    expect(screen.getByText("1 active · 1 completed · 2 total")).toBeTruthy();
-    expect(document.querySelectorAll(".task")).toHaveLength(2);
-    expect(document.querySelectorAll(".task.is-completed")).toHaveLength(1);
-  });
-
-  it("shows an empty state when there is nothing to do", async () => {
+describe("dashboard shell", () => {
+  it("renders the brand, sidebar navigation and welcome bar", async () => {
     installApi([]);
     render(<App />);
 
-    expect(await screen.findByText("No tasks yet — add your first one above.")).toBeTruthy();
+    expect(document.querySelector(".brand__accent")?.textContent).toBe("Dash");
+    expect(document.querySelector(".brand__rest")?.textContent).toBe("board");
+
+    for (const label of [
+      "Dashboard",
+      "Vital Task",
+      "My Task",
+      "Task Categories",
+      "Settings",
+      "Help",
+      "Logout",
+    ]) {
+      expect(screen.getByRole("button", { name: label })).toBeTruthy();
+    }
+
+    expect(document.querySelector(".welcome__title")?.textContent).toContain("Welcome back, Sundar");
+    expect(screen.getByRole("button", { name: "Invite" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add Task" })).toBeTruthy();
   });
 
-  it("adds a task and clears the form", async () => {
+  it("shows the three status panels", async () => {
+    installApi([]);
+    render(<App />);
+
+    expect(await screen.findByText("To Do")).toBeTruthy();
+    expect(screen.getByText("Task Status")).toBeTruthy();
+    expect(screen.getByText("Completed Task")).toBeTruthy();
+    expect(screen.getByText("Completed")).toBeTruthy();
+    expect(screen.getByText("In Progress")).toBeTruthy();
+    expect(screen.getByText("Not Started")).toBeTruthy();
+  });
+
+  it("prompts the server with no filter on the dashboard", async () => {
     const api = installApi([]);
     render(<App />);
-    await screen.findByText("No tasks yet — add your first one above.");
 
-    const input = screen.getByLabelText("Task title") as HTMLInputElement;
-    fireEvent.change(screen.getByLabelText("Priority"), { target: { value: "high" } });
-    fireEvent.change(input, { target: { value: "Buy milk" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add task" }));
+    await waitFor(() => {
+      expect(api.calls.some((call) => call.url === "/api/todos")).toBe(true);
+    });
+  });
+});
 
-    expect(await screen.findByText("Buy milk")).toBeTruthy();
-    expect(input.value).toBe("");
-    expect(callsTo(api, "POST", "/api/todos")[0]?.body).toEqual({
-      title: "Buy milk",
-      priority: "high",
-      due_date: null,
+describe("task cards", () => {
+  it("renders title, description and the meta line", async () => {
+    installApi([
+      makeTodo({
+        title: "Attend Nisha's Birthday Party",
+        description: "Buy gifts on the way and pick up cake from the bakery.",
+        status: "in_progress",
+        priority: "high",
+        due_date: null,
+      }),
+    ]);
+    render(<App />);
+
+    await screen.findByText("Attend Nisha's Birthday Party");
+    const card = document.querySelector(".task-card") as HTMLElement;
+    expect(
+      within(card).getByText("Buy gifts on the way and pick up cake from the bakery."),
+    ).toBeTruthy();
+    expect(within(card).getByText("High")).toBeTruthy();
+    expect(within(card).getByText("In Progress")).toBeTruthy();
+    expect(card.querySelector(".task-card__meta")?.textContent).toContain("Created on:");
+  });
+
+  it("keeps completed work off the board and lists it separately", async () => {
+    installApi([
+      makeTodo({ id: 1, title: "Walk the dog" }),
+      makeTodo({
+        id: 2,
+        title: "Conduct meeting",
+        description: "Meet with the client",
+        status: "completed",
+        completed_at: LATER,
+      }),
+    ]);
+    render(<App />);
+
+    await screen.findByText("Walk the dog");
+    const board = document.querySelector(".panel--board");
+    expect(board?.textContent).toContain("Walk the dog");
+    expect(board?.textContent).not.toContain("Conduct meeting");
+
+    const donePanel = document.querySelectorAll(".panel")[2];
+    expect(donePanel?.textContent).toContain("Conduct meeting");
+    expect(donePanel?.textContent).toContain("Completed");
+  });
+
+  it("advances a task's state when its dot is clicked", async () => {
+    const api = installApi([makeTodo({ title: "Walk the dog" })]);
+    render(<App />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: 'Mark "Walk the dog" as In Progress' }),
+    );
+
+    await waitFor(() => {
+      expect(callsTo(api, "PATCH")[0]?.body).toEqual({ status: "in_progress" });
     });
   });
 
-  it("refuses to submit a blank title", async () => {
+  it("marks an overdue task", async () => {
+    const past = new Date();
+    past.setDate(past.getDate() - 5);
+    installApi([makeTodo({ title: "Old task", due_date: localIso(past) })]);
+    render(<App />);
+
+    await screen.findByText("Old task");
+    const badge = document.querySelector(".task-card__due");
+    expect(badge?.textContent?.startsWith("Overdue")).toBe(true);
+    expect(badge?.className).toContain("is-overdue");
+  });
+});
+
+describe("task status donuts", () => {
+  it("shows each state's share of the total", async () => {
+    installApi([
+      makeTodo({ id: 1, status: "completed", completed_at: LATER }),
+      makeTodo({ id: 2, status: "in_progress" }),
+      makeTodo({ id: 3, status: "not_started" }),
+      makeTodo({ id: 4, status: "not_started" }),
+    ]);
+    render(<App />);
+
+    await screen.findByText("Task Status");
+    await waitFor(() => {
+      expect(screen.getByRole("img", { name: "Completed: 25%" })).toBeTruthy();
+    });
+    expect(screen.getByRole("img", { name: "In Progress: 25%" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Not Started: 50%" })).toBeTruthy();
+  });
+
+  it("shows 0% for every ring when there are no tasks", async () => {
+    installApi([]);
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("img", { name: "Completed: 0%" })).toBeTruthy();
+    });
+  });
+});
+
+describe("sidebar navigation", () => {
+  it("narrows to high-priority open work in Vital Task", async () => {
+    installApi([
+      makeTodo({ id: 1, title: "Urgent thing", priority: "high" }),
+      makeTodo({ id: 2, title: "Someday thing", priority: "low" }),
+      makeTodo({ id: 3, title: "Finished thing", priority: "high", status: "completed" }),
+    ]);
+    render(<App />);
+    await screen.findByText("Urgent thing");
+
+    fireEvent.click(screen.getByRole("button", { name: "Vital Task" }));
+
+    await waitFor(() => {
+      const board = document.querySelector(".panel--board");
+      expect(board?.textContent).toContain("Urgent thing");
+      expect(board?.textContent).not.toContain("Someday thing");
+      expect(board?.textContent).not.toContain("Finished thing");
+    });
+  });
+
+  it("lists every task in My Task", async () => {
+    installApi([
+      makeTodo({ id: 1, title: "Open thing" }),
+      makeTodo({ id: 2, title: "Finished thing", status: "completed" }),
+    ]);
+    render(<App />);
+    await screen.findByText("Open thing");
+
+    fireEvent.click(screen.getByRole("button", { name: "My Task" }));
+
+    await waitFor(() => {
+      const board = document.querySelector(".panel--board");
+      expect(board?.textContent).toContain("Open thing");
+      expect(board?.textContent).toContain("Finished thing");
+    });
+  });
+
+  it("lets the server narrow the Categories view", async () => {
+    const api = installApi([
+      makeTodo({ id: 1, status: "in_progress" }),
+      makeTodo({ id: 2, status: "completed" }),
+    ]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Task Categories" }));
+    await waitFor(() => {
+      expect(api.calls.some((call) => call.url.includes("filter=not_started"))).toBe(true);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "In Progress" }));
+
+    await waitFor(() => {
+      expect(api.calls.some((call) => call.url === "/api/todos?filter=in_progress")).toBe(true);
+    });
+  });
+
+  it("shows a placeholder panel for Settings", async () => {
+    installApi([]);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+    await waitFor(() => {
+      expect(document.querySelector(".panel")?.textContent).toContain("stored locally in SQLite");
+    });
+    expect(screen.getByRole("heading", { name: "Settings" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Add Task" })).toBeNull();
+  });
+});
+
+describe("adding a task", () => {
+  it("posts the whole draft from the modal", async () => {
     const api = installApi([]);
     render(<App />);
-    await screen.findByText("No tasks yet — add your first one above.");
 
-    fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "   " } });
-    fireEvent.click(screen.getByRole("button", { name: "Add task" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add Task" }));
+    const dialog = screen.getByRole("dialog");
 
-    expect(await screen.findByText("Enter a task title first.")).toBeTruthy();
+    fireEvent.change(within(dialog).getByLabelText("Title"), {
+      target: { value: "Plan the launch" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Description"), {
+      target: { value: "Book the venue" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Status"), {
+      target: { value: "in_progress" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Priority"), {
+      target: { value: "high" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add Task" }));
+
+    await waitFor(() => {
+      expect(callsTo(api, "POST", "/api/todos")[0]?.body).toEqual({
+        title: "Plan the launch",
+        description: "Book the venue",
+        status: "in_progress",
+        priority: "high",
+        due_date: null,
+        image: null,
+      });
+    });
+    expect(await screen.findByText("Plan the launch")).toBeTruthy();
+  });
+
+  it("refuses a blank title without calling the API", async () => {
+    const api = installApi([]);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add Task" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add Task" }));
+
+    expect(await screen.findByText("Give the task a title first.")).toBeTruthy();
     expect(callsTo(api, "POST")).toHaveLength(0);
   });
 
-  it("keeps the typed title when the server rejects it", async () => {
+  it("reports a rejected task and keeps the modal open", async () => {
     const api = installApi([]);
     api.state.rejectCreate = true;
     render(<App />);
 
-    const input = screen.getByLabelText("Task title") as HTMLInputElement;
-    fireEvent.change(input, { target: { value: "Buy milk" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add task" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add Task" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Title"), { target: { value: "Nope" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add Task" }));
 
     expect(await screen.findByText("title must not be empty")).toBeTruthy();
-    expect(input.value).toBe("Buy milk");
+    expect(screen.getByRole("dialog")).toBeTruthy();
   });
+});
 
-  it("ticks a task off", async () => {
-    const api = installApi([makeTodo({ title: "Buy milk" })]);
-    render(<App />);
-
-    fireEvent.click(await screen.findByLabelText('Mark "Buy milk" as complete'));
-
-    await waitFor(() => {
-      expect(callsTo(api, "PATCH")[0]?.body).toEqual({ completed: true });
-    });
-    await waitFor(() => {
-      expect(document.querySelectorAll(".task.is-completed")).toHaveLength(1);
-    });
-  });
-
-  it("cancels an edit with Escape and saves it with Enter", async () => {
-    const api = installApi([makeTodo({ title: "Buy milk" })]);
-    render(<App />);
-    await screen.findByText("Buy milk");
-
-    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-    const editor = screen.getByLabelText("Edit task title") as HTMLInputElement;
-    fireEvent.change(editor, { target: { value: "Buy oat milk" } });
-    fireEvent.keyDown(editor, { key: "Escape" });
-
-    await waitFor(() => expect(screen.queryByLabelText("Edit task title")).toBeNull());
-    expect(callsTo(api, "PATCH")).toHaveLength(0);
-    expect(screen.getByText("Buy milk")).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-    const again = screen.getByLabelText("Edit task title") as HTMLInputElement;
-    fireEvent.change(again, { target: { value: "Buy oat milk" } });
-    fireEvent.keyDown(again, { key: "Enter" });
-
-    await waitFor(() => {
-      expect(callsTo(api, "PATCH")[0]?.body).toEqual({ title: "Buy oat milk" });
-    });
-    expect(await screen.findByText("Buy oat milk")).toBeTruthy();
-  });
-
-  it("respects a refused delete", async () => {
-    const api = installApi([makeTodo({ title: "Buy milk" })]);
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-    render(<App />);
-    await screen.findByText("Buy milk");
-
-    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-
-    expect(confirmSpy).toHaveBeenCalled();
-    expect(callsTo(api, "DELETE")).toHaveLength(0);
-    expect(screen.getByText("Buy milk")).toBeTruthy();
-  });
-
-  it("deletes a task once confirmed", async () => {
-    const api = installApi([makeTodo({ title: "Buy milk" })]);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-    render(<App />);
-    await screen.findByText("Buy milk");
-
-    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-
-    await waitFor(() => expect(callsTo(api, "DELETE")).toHaveLength(1));
-    expect(await screen.findByText("No tasks yet — add your first one above.")).toBeTruthy();
-  });
-
-  it("re-queries the API when the filter changes", async () => {
-    const api = installApi([makeTodo({ title: "Buy milk" })]);
-    render(<App />);
-    await screen.findByText("Buy milk");
-
-    fireEvent.click(screen.getByRole("button", { name: /^Active/ }));
-
-    await waitFor(() => {
-      expect(api.calls.some((call) => call.url === "/api/todos?status=active")).toBe(true);
-    });
-  });
-
-  it("searches titles once the debounce settles", async () => {
+describe("search, delete and errors", () => {
+  it("asks the server for a search once the debounce settles", async () => {
     const api = installApi([
-      makeTodo({ title: "Buy milk" }),
+      makeTodo({ id: 1, title: "Buy milk" }),
       makeTodo({ id: 2, title: "Write tests" }),
     ]);
     render(<App />);
     await screen.findByText("Buy milk");
 
-    fireEvent.change(screen.getByLabelText("Search tasks"), { target: { value: "tests" } });
+    fireEvent.change(screen.getByLabelText("Search your task here"), {
+      target: { value: "tests" },
+    });
 
     await waitFor(
       () => {
@@ -292,31 +447,39 @@ describe("App", () => {
       { timeout: 2000 },
     );
     await waitFor(() => expect(screen.queryByText("Buy milk")).toBeNull());
-    expect(screen.getByText("Write tests")).toBeTruthy();
   });
 
-  it("flags a task that is several days overdue", async () => {
-    const past = new Date();
-    past.setDate(past.getDate() - 5);
-    installApi([makeTodo({ title: "Old task", due_date: localIso(past) })]);
+  it("respects a refused delete and deletes once confirmed", async () => {
+    const api = installApi([makeTodo({ title: "Walk the dog" })]);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     render(<App />);
-    await screen.findByText("Old task");
+    await screen.findByText("Walk the dog");
 
-    const badge = document.querySelector(".badge--due");
-    expect(badge?.textContent?.startsWith("Overdue")).toBe(true);
-    expect(badge?.className).toContain("is-overdue");
+    fireEvent.click(screen.getByRole("button", { name: "Delete Walk the dog" }));
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(callsTo(api, "DELETE")).toHaveLength(0);
+
+    confirmSpy.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "Delete Walk the dog" }));
+
+    await waitFor(() => expect(callsTo(api, "DELETE")).toHaveLength(1));
+    expect(await screen.findByText("Nothing on the board yet — add your first task.")).toBeTruthy();
   });
 
-  it("labels a task due yesterday without the overdue word", async () => {
-    const past = new Date();
-    past.setDate(past.getDate() - 1);
-    installApi([makeTodo({ title: "Yesterday task", due_date: localIso(past) })]);
+  it("clears every completed task from the board footer", async () => {
+    const api = installApi([
+      makeTodo({ id: 1, title: "Open thing" }),
+      makeTodo({ id: 2, title: "Done thing", status: "completed" }),
+    ]);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<App />);
-    await screen.findByText("Yesterday task");
+    await screen.findByText("Open thing");
 
-    const badge = document.querySelector(".badge--due");
-    expect(badge?.textContent).toBe("Due yesterday");
-    expect(badge?.className).toContain("is-overdue");
+    fireEvent.click(screen.getByRole("button", { name: /Clear 1 completed task/ }));
+
+    await waitFor(() => {
+      expect(callsTo(api, "POST", "clear-completed")).toHaveLength(1);
+    });
   });
 
   it("explains when the server cannot be reached", async () => {

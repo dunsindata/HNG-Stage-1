@@ -38,11 +38,11 @@ Options:
 
 API:
   GET    /api/health                   service probe
-  GET    /api/stats                    total/active/completed counts
-  GET    /api/todos?status=&q=         list to-dos (status = all|active|completed)
+  GET    /api/stats                    counts per state, for the donut charts
+  GET    /api/todos?filter=&q=         list to-dos (filter = all|open|not_started|in_progress|completed)
   POST   /api/todos                    create a to-do
   GET    /api/todos/:id                fetch one to-do
-  PATCH  /api/todos/:id                update title/completed/priority/due_date
+  PATCH  /api/todos/:id                update title/description/status/priority/due_date/image
   DELETE /api/todos/:id                delete one to-do
   POST   /api/todos/clear-completed    delete every completed to-do`;
 

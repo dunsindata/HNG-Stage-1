@@ -1,13 +1,38 @@
 # To-do list web app
 
-A small, genuinely useful to-do list: add tasks, give them a priority and due
-date, tick them off, edit them inline, search them, and clear what is finished.
-Everything is stored in SQLite, so your list survives a restart.
+A small, genuinely useful to-do dashboard: track every task through three
+states (Not Started → In Progress → Completed), with a priority, an optional
+description, due date and thumbnail. Everything is stored in SQLite, so your
+list survives a restart.
 
 **Stack:** Node.js + Express 5 for the API, the built-in `node:sqlite` module
-for storage, and a dependency-free vanilla-JS front-end. Express is the only
-production dependency, and the tests use Node's built-in test runner — so
-`npm install` pulls in nothing extra.
+for storage, and a React 19 + TypeScript dashboard built with Vite. Express is
+the only production dependency.
+
+## The interface
+
+```
+┌────────────┬──────────────────────────────────────────────┐
+│  Sidebar   │  brand · search · notifications · date       │
+│  avatar    ├──────────────────────────────────────────────┤
+│  nav       │  Welcome back, Sundar 👋      avatars  Invite │
+│  logout    │  ┌────────────────────┐ ┌──────────────────┐ │
+│            │  │ To Do   + Add Task │ │ Task Status ◔◑◕ │ │
+│            │  │ ┌────────────────┐ │ │ Completed  40%  │ │
+│            │  │ │ status card    │ │ │ In Progress 40% │ │
+│            │  │ └────────────────┘ │ │ Not Started 20% │ │
+│            │  └────────────────────┘ ├──────────────────┤ │
+│            │                        │ Completed Task    │ │
+│            │                        └──────────────────┘ │
+└────────────┴──────────────────────────────────────────────┘
+```
+
+* **Sidebar** — Dashboard, Vital Task (high priority and unfinished), My Task
+  (everything), Task Categories (Not Started / In Progress / Completed),
+  Settings and Help.
+* **Task cards** — click the coloured dot to cycle a task's state; the donut
+  charts and the completed list follow along.
+* **Invite**, **Logout** and **Settings** are presentational for now.
 
 ## Requirements
 
@@ -43,11 +68,11 @@ Press `Ctrl+C` to stop. Tasks are written to `data/todos.db` by default.
 
 Both UIs talk to the same API, so pick whichever fits the moment.
 
-| | `public/` (default) | `web/` (React + TypeScript) |
+| | `web/` (React + TypeScript) | `public/` (no build) |
 | --- | --- | --- |
-| Build step | none | Vite + `tsc` |
-| Served by | `npm start` directly | Vite dev server, or `npm start` after `npm run web:build` |
-| Tests | covered through the API suite | 32 Vitest tests |
+| Build step | Vite + `tsc` | none |
+| Served by | Vite dev server, or `npm start` after `npm run web:build` | `npm start` directly |
+| Interface | full dashboard | simple list, same fields |
 
 `src/index.js` serves `web/dist` when it exists and otherwise falls back to
 `public/`, so the app is useful before you ever install the UI toolchain.
@@ -71,39 +96,61 @@ npm run web:build       # type-checks, then emits web/dist
 npm start               # now serves the built React app on :8000
 ```
 
+## Deploying to Vercel
+
+```bash
+vercel --prod          # first run creates the project and links it
+vercel git connect https://github.com/dunsindata/HNG-Stage-1
+```
+
+`vercel.json` builds the dashboard (`npm run web:install && npm run web:build`),
+serves `web/dist` as static output, and rewrites every `/api/*` request to the
+serverless function in `api/index.js`. That file exports the Express app itself
+as the handler, so the same `createApp` factory runs locally and in production.
+`test/vercel.test.js` drives the function over a real socket, so a broken
+deployment fails in the test suite rather than in production.
+
+> **Storage is ephemeral on Vercel.** The function keeps SQLite in `/tmp`, the
+> only writable directory there, and `/tmp` is per-instance and wiped when the
+> instance recycles. Tasks therefore do not survive a cold start, and requests
+> routed to a second instance see a different board. Set `TODO_DB_PATH` to
+> hosted storage (Turso/libSQL keeps the same SQL, so it is a small change) when
+> you need the list to persist.
+
 ## Run the tests
 
 ```bash
-npm test                # 77 API + storage tests (node:test)
-npm run web:test        # 32 UI tests (Vitest + Testing Library)
+npm test                # 76 API + storage tests (node:test)
+npm run web:test        # 47 UI tests (Vitest + Testing Library)
 npm run web:typecheck   # tsc --noEmit
 ```
 
 ## Features
 
-* Add a task with an optional priority (low/medium/high) and due date
-* Tick tasks complete, or click straight back to active
-* Inline title editing — `Enter` saves, `Esc` cancels
+* Three task states — Not Started, In Progress and Completed — cycled from the
+  card's status dot
+* Optional description, priority (low/medium/high), due date and thumbnail
+  (`http(s)` or site-relative URLs only)
+* Donut charts of the per-state split, driven by `GET /api/stats`
+* Sidebar views: high-priority work, everything, and per-state categories
+* Search across titles and descriptions (case-insensitive, debounced)
+* Due dates rendered as "Due today", "Overdue · Mar 4", highlighted in red
 * Delete a single task, or clear everything completed at once
-* Filter by All / Active / Completed, with live counts
-* Search titles (case-insensitive, debounced)
-* Due dates rendered as "Due today", "Due tomorrow", "Overdue · Mar 4", and
-  highlighted in red when overdue
-* Dark, responsive layout; keyboard accessible with visible focus rings
+* Responsive layout, keyboard accessible with visible focus rings
 * Errors from the API surface in an inline banner instead of failing silently
 
 ## API
 
-| Method   | Path                         | Purpose                                              |
-| -------- | ---------------------------- | ---------------------------------------------------- |
-| `GET`    | `/api/health`                | Service probe → `{"status": "ok"}`                   |
-| `GET`    | `/api/stats`                 | `{"total": n, "active": n, "completed": n}`           |
-| `GET`    | `/api/todos?status=&q=`      | List tasks (`status` = `all`\|`active`\|`completed`)  |
-| `POST`   | `/api/todos`                 | Create a task                                        |
-| `GET`    | `/api/todos/:id`             | Fetch one task                                       |
-| `PATCH`  | `/api/todos/:id`             | Update `title`, `completed`, `priority`, `due_date`   |
-| `DELETE` | `/api/todos/:id`             | Delete one task                                      |
-| `POST`   | `/api/todos/clear-completed` | Delete every completed task                          |
+| Method   | Path                         | Purpose                                                 |
+| -------- | ---------------------------- | ------------------------------------------------------- |
+| `GET`    | `/api/health`                | Service probe → `{"status": "ok"}`                      |
+| `GET`    | `/api/stats`                 | Counts per state, for the donut charts                  |
+| `GET`    | `/api/todos?filter=&q=`      | List tasks (`filter` = `all`\|`open`\|`not_started`\|`in_progress`\|`completed`) |
+| `POST`   | `/api/todos`                 | Create a task                                           |
+| `GET`    | `/api/todos/:id`             | Fetch one task                                          |
+| `PATCH`  | `/api/todos/:id`             | Update `title`, `description`, `status`, `priority`, `due_date`, `image` |
+| `DELETE` | `/api/todos/:id`             | Delete one task                                         |
+| `POST`   | `/api/todos/clear-completed` | Delete every completed task                             |
 
 Errors come back as `{"error": "message"}` with a `400` (invalid input),
 `404` (unknown task) or `405` (wrong method) status. It is a normal JSON API,
@@ -112,7 +159,7 @@ so `curl` works too:
 ```bash
 curl -X POST http://127.0.0.1:8000/api/todos \
   -H "Content-Type: application/json" \
-  -d '{"title": "Buy milk", "priority": "high", "due_date": "2031-01-01"}'
+  -d '{"title": "Buy milk", "priority": "high", "status": "in_progress", "due_date": "2031-01-01"}'
 ```
 
 A task looks like this:
@@ -121,30 +168,38 @@ A task looks like this:
 {
   "id": 1,
   "title": "Buy milk",
-  "completed": false,
-  "priority": "medium",
+  "description": "Two litres, semi-skimmed",
+  "status": "in_progress",
+  "priority": "high",
   "due_date": "2031-01-01",
+  "image": null,
   "created_at": "2026-09-29T12:21:10Z",
   "updated_at": "2026-09-29T12:21:10Z",
   "completed_at": null
 }
 ```
 
+> `completed` (a boolean) was replaced by `status`, and `description` and `image`
+> were added. An existing `data/todos.db` is upgraded in place on the next
+> start: completed tasks become `"completed"`, everything else
+> `"not_started"`. The old `?status=` query parameter is now `?filter=`.
+
 ## Project layout
 
 ```
-src/store.js          SQLite storage + all validation rules (node:sqlite)
+src/store.js          SQLite storage, v1→v2 migration, validation (node:sqlite)
 src/app.js            Express app factory: JSON API at /api, static files at /
 src/index.js          CLI entry point: flags, listen, graceful shutdown
 public/               No-build front-end served by `npm start` by default
-web/src/App.tsx       React root: composes the page and holds the confirm dialogs
-web/src/useTodos.ts   All task state: list, counts, filters, search, mutations
+web/src/App.tsx       React root: the dashboard shell and its sidebar views
+web/src/useTodos.ts   All task state: list, counts, filter, search, mutations
 web/src/api.ts        Typed API client with error mapping
 web/src/types.ts      Todo / Stats / draft / patch shapes
-web/src/lib/dates.ts  Due-date wording ("Due today", "Overdue · Mar 4")
-web/src/components/   Header, TaskComposer, Toolbar, TaskList, TaskItem, ...
+web/src/lib/dates.ts  Date wording ("Due today", "2 days ago", "29/9/2026")
+web/src/lib/labels.ts Status and priority labels, and the state cycle
+web/src/components/   Sidebar, Topbar, WelcomeBar, TaskCard, StatusPanel, ...
 web/vite.config.ts    Vite config, /api dev proxy, Vitest config
-test/store.test.js    Storage and validation tests
+test/store.test.js    Storage, validation and migration tests
 test/api.test.js      End-to-end HTTP tests against a live server
 web/src/*.test.tsx    UI tests (Vitest + Testing Library)
 ```

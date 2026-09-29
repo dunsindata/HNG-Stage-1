@@ -16,8 +16,8 @@ const SEARCH_DEBOUNCE_MS = 250;
 
 const state = {
   todos: [],
-  stats: { total: 0, active: 0, completed: 0 },
-  status: "all",
+  stats: { total: 0, open: 0, completed: 0 },
+  filter: "all",
   query: "",
   editingId: null,
   focusEditor: false,
@@ -66,7 +66,7 @@ async function request(url, options = {}) {
 
 async function fetchTodos() {
   const params = new URLSearchParams();
-  if (state.status !== "all") params.set("status", state.status);
+  if (state.filter !== "all") params.set("filter", state.filter);
   if (state.query) params.set("q", state.query);
   const suffix = params.toString() ? `?${params}` : "";
   return request(`${API.todos}${suffix}`);
@@ -119,8 +119,8 @@ function describeDue(iso) {
 
 function emptyMessage() {
   if (state.query) return `No tasks match “${state.query}”.`;
-  if (state.status === "active") return "Nothing left to do.";
-  if (state.status === "completed") return "No completed tasks yet.";
+  if (state.filter === "open") return "Nothing left to do.";
+  if (state.filter === "completed") return "No completed tasks yet.";
   return "No tasks yet — add your first one above.";
 }
 
@@ -128,14 +128,15 @@ function emptyMessage() {
 
 function buildTask(todo) {
   const node = el.template.content.firstElementChild.cloneNode(true);
+  const isDone = todo.status === "completed";
   node.dataset.id = String(todo.id);
-  node.classList.toggle("is-completed", todo.completed);
+  node.classList.toggle("is-completed", isDone);
 
   const toggle = node.querySelector(".task__toggle");
-  toggle.checked = todo.completed;
+  toggle.checked = isDone;
   toggle.setAttribute(
     "aria-label",
-    todo.completed ? `Mark "${todo.title}" as active` : `Mark "${todo.title}" as complete`,
+    isDone ? `Mark "${todo.title}" as active` : `Mark "${todo.title}" as complete`,
   );
 
   const priorityBadge = node.querySelector(".badge--priority");
@@ -146,7 +147,7 @@ function buildTask(todo) {
   if (todo.due_date) {
     const due = describeDue(todo.due_date);
     dueBadge.textContent = due.text;
-    dueBadge.classList.toggle("is-overdue", due.overdue && !todo.completed);
+    dueBadge.classList.toggle("is-overdue", due.overdue && !isDone);
     dueBadge.hidden = false;
   }
 
@@ -206,7 +207,7 @@ function render() {
     badge.textContent = String(state.stats[badge.dataset.count] ?? 0);
   }
   for (const button of el.filters) {
-    button.setAttribute("aria-pressed", String(button.dataset.status === state.status));
+    button.setAttribute("aria-pressed", String(button.dataset.filter === state.filter));
   }
 
   el.clearCompleted.disabled = state.stats.completed === 0;
@@ -214,8 +215,8 @@ function render() {
   if (state.stats.total === 0) {
     el.summary.textContent = "No tasks yet.";
   } else {
-    const { active, completed, total } = state.stats;
-    el.summary.textContent = `${active} active · ${completed} completed · ${total} total`;
+    const { open, completed, total } = state.stats;
+    el.summary.textContent = `${open} open · ${completed} completed · ${total} total`;
   }
 
   if (state.focusEditor) {
@@ -260,11 +261,11 @@ async function createTodo(event) {
   });
 }
 
-async function toggleTodo(id, completed) {
+async function setTaskStatus(id, status) {
   await run(async () => {
     await request(`${API.todos}/${id}`, {
       method: "PATCH",
-      body: JSON.stringify({ completed }),
+      body: JSON.stringify({ status }),
     });
     await refreshData();
   });
@@ -319,9 +320,9 @@ function startEditing(id) {
   render();
 }
 
-function setStatus(status) {
-  if (state.status === status) return;
-  state.status = status;
+function setFilter(filter) {
+  if (state.filter === filter) return;
+  state.filter = filter;
   state.editingId = null;
   state.focusEditor = false;
   run(refreshData);
@@ -350,11 +351,11 @@ el.list.addEventListener("change", (event) => {
   if (!toggle) return;
   const task = toggle.closest(".task");
   if (!task) return;
-  toggleTodo(Number(task.dataset.id), toggle.checked);
+  setTaskStatus(Number(task.dataset.id), toggle.checked ? "completed" : "not_started");
 });
 
 for (const button of el.filters) {
-  button.addEventListener("click", () => setStatus(button.dataset.status));
+  button.addEventListener("click", () => setFilter(button.dataset.filter));
 }
 
 el.clearCompleted.addEventListener("click", clearCompleted);

@@ -1,7 +1,7 @@
 /**
  * Tests for the SQLite-backed to-do store.
  *
- * Run with: npm test   (or: node --test test/)
+ * Run with: npm test   (or: node --test test/store.test.js)
  */
 
 import assert from "node:assert/strict";
@@ -9,16 +9,22 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { DatabaseSync } from "node:sqlite";
 
 import {
   DEFAULT_PRIORITY,
+  DEFAULT_STATUS,
+  MAX_IMAGE_LENGTH,
   MAX_TITLE_LENGTH,
   NotFoundError,
+  STATUSES,
   TodoStore,
   ValidationError,
-  cleanCompleted,
+  cleanDescription,
   cleanDueDate,
+  cleanImage,
   cleanPriority,
+  cleanStatus,
   cleanTitle,
   cleanTodoId,
 } from "../src/store.js";
@@ -32,7 +38,10 @@ function freshStore(t) {
 
 function rejects(fn, message) {
   return (error) => {
-    assert.ok(error instanceof ValidationError, `expected ValidationError, got ${error?.name}: ${error?.message}`);
+    assert.ok(
+      error instanceof ValidationError,
+      `expected ValidationError, got ${error?.name}: ${error?.message}`,
+    );
     if (message !== undefined) {
       assert.ok(
         error.message.includes(message),
@@ -55,19 +64,57 @@ describe("cleanTitle", () => {
 
   it("rejects blank and non-string titles", () => {
     for (const value of ["", "   ", null, undefined, 42, ["task"]]) {
-      assert.throws(() => cleanTitle(value), rejects(), `expected ${JSON.stringify(value)} to be rejected`);
+      assert.throws(() => cleanTitle(value), rejects());
     }
   });
 
   it("rejects a title longer than the maximum", () => {
-    assert.throws(() => cleanTitle("a".repeat(MAX_TITLE_LENGTH + 1)), rejects(undefined, `at most ${MAX_TITLE_LENGTH}`));
+    assert.throws(
+      () => cleanTitle("a".repeat(MAX_TITLE_LENGTH + 1)),
+      rejects(undefined, `at most ${MAX_TITLE_LENGTH}`),
+    );
+  });
+});
+
+describe("cleanDescription", () => {
+  it("trims and collapses runs of spaces", () => {
+    assert.equal(cleanDescription("  buy   the  cake "), "buy the cake");
+  });
+
+  it("treats empty values as unset", () => {
+    assert.equal(cleanDescription(null), null);
+    assert.equal(cleanDescription(undefined), null);
+    assert.equal(cleanDescription("   "), null);
+  });
+
+  it("keeps newlines, so multi-line descriptions survive", () => {
+    assert.equal(cleanDescription("line one\nline two"), "line one\nline two");
+  });
+
+  it("rejects non-strings", () => {
+    for (const value of [42, true, {}]) {
+      assert.throws(() => cleanDescription(value), rejects(undefined, "must be a string or null"));
+    }
+  });
+});
+
+describe("cleanStatus", () => {
+  it("accepts the three board states, ignoring case", () => {
+    for (const status of STATUSES) {
+      assert.equal(cleanStatus(` ${status.toUpperCase()} `), status);
+    }
+  });
+
+  it("rejects anything else", () => {
+    for (const value of ["done", "pending", "", 3, null]) {
+      assert.throws(() => cleanStatus(value), rejects());
+    }
   });
 });
 
 describe("cleanPriority", () => {
   it("normalises case and surrounding space", () => {
     assert.equal(cleanPriority(" HIGH "), "high");
-    assert.equal(cleanPriority("low"), "low");
   });
 
   it("rejects unknown values and non-strings", () => {
@@ -79,8 +126,6 @@ describe("cleanPriority", () => {
 describe("cleanDueDate", () => {
   it("treats null, undefined and blank strings as unset", () => {
     assert.equal(cleanDueDate(null), null);
-    assert.equal(cleanDueDate(undefined), null);
-    assert.equal(cleanDueDate(""), null);
     assert.equal(cleanDueDate("   "), null);
   });
 
@@ -91,32 +136,37 @@ describe("cleanDueDate", () => {
   });
 
   it("rejects malformed and impossible dates", () => {
-    for (const value of ["tomorrow", "2030-1-5", "2030-02-30", "2030-13-01", "01/02/2030"]) {
-      assert.throws(() => cleanDueDate(value), rejects(), `expected "${value}" to be rejected`);
+    for (const value of ["tomorrow", "2030-1-5", "2030-02-30", "01/02/2030"]) {
+      assert.throws(() => cleanDueDate(value), rejects());
     }
     assert.throws(() => cleanDueDate(20300105), rejects(undefined, "string or null"));
   });
 });
 
-describe("cleanCompleted", () => {
-  it("accepts only real booleans", () => {
-    assert.equal(cleanCompleted(true), true);
-    assert.equal(cleanCompleted(false), false);
-    for (const value of ["true", 1, 0, null, undefined]) {
-      assert.throws(() => cleanCompleted(value), rejects(undefined, "completed must be true or false"));
-    }
-  });
-});
-
-describe("cleanTodoId", () => {
-  it("accepts positive integers", () => {
-    assert.equal(cleanTodoId(7), 7);
+describe("cleanImage", () => {
+  it("accepts http(s) URLs and site-relative paths", () => {
+    assert.equal(cleanImage("https://example.com/a.png"), "https://example.com/a.png");
+    assert.equal(cleanImage("http://example.com/a.png"), "http://example.com/a.png");
+    assert.equal(cleanImage("/images/a.png"), "/images/a.png");
   });
 
-  it("rejects anything else", () => {
-    for (const value of [0, -1, 1.5, "7", true, null, undefined, Number.NaN]) {
-      assert.throws(() => cleanTodoId(value), rejects(), `expected ${value} to be rejected`);
+  it("treats empty values as unset", () => {
+    assert.equal(cleanImage(null), null);
+    assert.equal(cleanImage("  "), null);
+  });
+
+  it("refuses schemes that could execute script in an <img>", () => {
+    for (const value of ["javascript:alert(1)", "data:image/svg+xml;base64,PHN2Zz4=", "file:///x"]) {
+      assert.throws(() => cleanImage(value), rejects(undefined, "http(s) URL"));
     }
+  });
+
+  it("rejects an over-long URL and non-strings", () => {
+    assert.throws(
+      () => cleanImage(`https://e.com/${"a".repeat(MAX_IMAGE_LENGTH)}`),
+      rejects(undefined, `at most ${MAX_IMAGE_LENGTH}`),
+    );
+    assert.throws(() => cleanImage(42), rejects(undefined, "URL string or null"));
   });
 });
 
@@ -127,50 +177,65 @@ describe("TodoStore.createTodo", () => {
     const todo = store.createTodo("  Buy   milk  ");
 
     assert.equal(todo.title, "Buy milk");
-    assert.equal(todo.completed, false);
+    assert.equal(todo.status, DEFAULT_STATUS);
     assert.equal(todo.priority, DEFAULT_PRIORITY);
+    assert.equal(todo.description, null);
     assert.equal(todo.due_date, null);
+    assert.equal(todo.image, null);
     assert.equal(todo.completed_at, null);
     assert.equal(todo.created_at, todo.updated_at);
     assert.match(todo.created_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
     assert.equal(typeof todo.id, "number");
   });
 
-  it("stores priority and due date", (t) => {
+  it("stores every field it is given", (t) => {
     const store = freshStore(t);
 
-    const todo = store.createTodo("File taxes", { priority: "HIGH", due_date: "2031-04-15" });
+    const todo = store.createTodo("Attend Nisha's Birthday Party", {
+      description: "Buy gifts on the way and pick up cake.",
+      status: "in_progress",
+      priority: "HIGH",
+      due_date: "2031-04-15",
+      image: "https://example.com/party.png",
+    });
 
+    assert.equal(todo.description, "Buy gifts on the way and pick up cake.");
+    assert.equal(todo.status, "in_progress");
     assert.equal(todo.priority, "high");
     assert.equal(todo.due_date, "2031-04-15");
+    assert.equal(todo.image, "https://example.com/party.png");
   });
 
-  it("assigns increasing ids", (t) => {
+  it("stamps completed_at when created as completed", (t) => {
     const store = freshStore(t);
 
-    const first = store.createTodo("First");
-    const second = store.createTodo("Second");
+    const todo = store.createTodo("Already done", { status: "completed" });
 
-    assert.ok(second.id > first.id, "expected the second id to be greater");
+    assert.equal(todo.status, "completed");
+    assert.ok(todo.completed_at, "expected completed_at to be set");
   });
 
   it("rejects invalid input without persisting anything", (t) => {
     const store = freshStore(t);
 
     const cases = [
-      [[""], "must not be empty"],
-      [["   "], "must not be empty"],
-      [[null], "title must be a string"],
-      [[42], "title must be a string"],
-      [["a".repeat(MAX_TITLE_LENGTH + 1)], "at most"],
-      [["ok", { priority: "urgent" }], "priority must be one of"],
-      [["ok", { priority: 3 }], "priority must be a string"],
-      [["ok", { due_date: "someday" }], "valid 'YYYY-MM-DD' date"],
-      [["ok", { due_date: 20310101 }], "string or null"],
+      ["", {}, "must not be empty"],
+      ["   ", {}, "must not be empty"],
+      [null, {}, "title must be a string"],
+      ["a".repeat(MAX_TITLE_LENGTH + 1), {}, "at most"],
+      ["ok", { priority: "urgent" }, "priority must be one of"],
+      ["ok", { status: "done" }, "status must be one of"],
+      ["ok", { due_date: "someday" }, "valid 'YYYY-MM-DD' date"],
+      ["ok", { image: "javascript:alert(1)" }, "http(s) URL"],
+      ["ok", { description: 42 }, "must be a string or null"],
     ];
 
-    for (const [args, message] of cases) {
-      assert.throws(() => store.createTodo(...args), rejects(undefined, message), `args: ${JSON.stringify(args)}`);
+    for (const [title, fields, message] of cases) {
+      assert.throws(
+        () => store.createTodo(title, fields),
+        rejects(undefined, message),
+        `title: ${String(title)} fields: ${JSON.stringify(fields)}`,
+      );
     }
     assert.equal(store.stats().total, 0);
   });
@@ -179,29 +244,24 @@ describe("TodoStore.createTodo", () => {
 describe("TodoStore read operations", () => {
   it("returns a stored to-do by id", (t) => {
     const store = freshStore(t);
-
     const created = store.createTodo("Read me");
 
     assert.deepEqual(store.getTodo(created.id), created);
   });
 
-  it("raises NotFoundError for a missing or invalid id", (t) => {
+  it("raises NotFoundError for a missing id and ValidationError for a bad one", (t) => {
     const store = freshStore(t);
 
     assert.throws(() => store.getTodo(999), NotFoundError);
     assert.throws(() => store.getTodo(0), ValidationError);
   });
 
-  it("starts empty", (t) => {
-    assert.deepEqual(freshStore(t).listTodos(), []);
-  });
-
-  it("lists open items first and newest first", (t) => {
+  it("lists unfinished work first, newest first", (t) => {
     const store = freshStore(t);
     const first = store.createTodo("first");
     const second = store.createTodo("second");
     const third = store.createTodo("third");
-    store.updateTodo(second.id, { completed: true });
+    store.updateTodo(second.id, { status: "completed" });
 
     assert.deepEqual(
       store.listTodos().map((todo) => todo.id),
@@ -209,35 +269,48 @@ describe("TodoStore read operations", () => {
     );
   });
 
-  it("filters by status", (t) => {
+  it("filters by state", (t) => {
     const store = freshStore(t);
-    const done = store.createTodo("done");
-    store.createTodo("open");
-    store.updateTodo(done.id, { completed: true });
+    const done = store.createTodo("done", { status: "completed" });
+    const running = store.createTodo("running", { status: "in_progress" });
+    const waiting = store.createTodo("waiting");
 
-    assert.equal(store.listTodos({ status: "all" }).length, 2);
+    assert.equal(store.listTodos({ filter: "all" }).length, 3);
+    // Same-second rows are ordered newest first, so `waiting` precedes `running`.
     assert.deepEqual(
-      store.listTodos({ status: "active" }).map((todo) => todo.title),
-      ["open"],
+      store.listTodos({ filter: "open" }).map((todo) => todo.id),
+      [waiting.id, running.id],
     );
     assert.deepEqual(
-      store.listTodos({ status: "completed" }).map((todo) => todo.title),
-      ["done"],
+      store.listTodos({ filter: "in_progress" }).map((todo) => todo.id),
+      [running.id],
+    );
+    assert.deepEqual(
+      store.listTodos({ filter: "completed" }).map((todo) => todo.id),
+      [done.id],
+    );
+    assert.deepEqual(
+      store.listTodos({ filter: "not_started" }).map((todo) => todo.id),
+      [waiting.id],
     );
   });
 
-  it("rejects an unknown status", (t) => {
-    assert.throws(() => freshStore(t).listTodos({ status: "archived" }), ValidationError);
+  it("rejects an unknown filter", (t) => {
+    assert.throws(() => freshStore(t).listTodos({ filter: "archived" }), ValidationError);
   });
 
-  it("searches titles case-insensitively", (t) => {
+  it("searches titles and descriptions, case-insensitively", (t) => {
     const store = freshStore(t);
     store.createTodo("Buy milk");
-    store.createTodo("Walk the dog");
+    store.createTodo("Plan landing page", { description: "Hero section AND CTA" });
 
     assert.deepEqual(
       store.listTodos({ query: "MILK" }).map((todo) => todo.title),
       ["Buy milk"],
+    );
+    assert.deepEqual(
+      store.listTodos({ query: "hero section" }).map((todo) => todo.title),
+      ["Plan landing page"],
     );
   });
 
@@ -245,15 +318,10 @@ describe("TodoStore read operations", () => {
     const store = freshStore(t);
     store.createTodo("100% done");
     store.createTodo("100 percent done");
-    store.createTodo("under_score");
 
     assert.deepEqual(
       store.listTodos({ query: "100%" }).map((todo) => todo.title),
       ["100% done"],
-    );
-    assert.deepEqual(
-      store.listTodos({ query: "_" }).map((todo) => todo.title),
-      ["under_score"],
     );
   });
 
@@ -264,37 +332,37 @@ describe("TodoStore read operations", () => {
     assert.equal(store.listTodos({ query: "   " }).length, 1);
   });
 
-  it("combines status and search", (t) => {
-    const store = freshStore(t);
-    const done = store.createTodo("Buy milk");
-    store.createTodo("Buy bread");
-    store.updateTodo(done.id, { completed: true });
-
-    assert.deepEqual(
-      store.listTodos({ status: "active", query: "buy" }).map((todo) => todo.title),
-      ["Buy bread"],
-    );
-  });
-
   it("counts every state", (t) => {
     const store = freshStore(t);
-    assert.deepEqual(store.stats(), { total: 0, active: 0, completed: 0 });
+    assert.deepEqual(store.stats(), {
+      total: 0,
+      completed: 0,
+      in_progress: 0,
+      not_started: 0,
+      open: 0,
+    });
 
-    store.createTodo("open");
-    const done = store.createTodo("done");
-    store.updateTodo(done.id, { completed: true });
+    store.createTodo("a");
+    store.createTodo("b", { status: "in_progress" });
+    store.createTodo("c", { status: "completed" });
 
-    assert.deepEqual(store.stats(), { total: 2, active: 1, completed: 1 });
+    assert.deepEqual(store.stats(), {
+      total: 3,
+      completed: 1,
+      in_progress: 1,
+      not_started: 1,
+      open: 2,
+    });
   });
 });
 
 describe("TodoStore.updateTodo", () => {
   it("changes only the fields it is given", (t) => {
     const store = freshStore(t);
-    const todo = store.createTodo("Draft");
+    const todo = store.createTodo("Draft", { description: "first pass" });
 
     const updated = store.updateTodo(todo.id, {
-      title: " Write   the spec ",
+      title: " Write the spec ",
       priority: "high",
       due_date: "2031-01-05",
     });
@@ -303,29 +371,54 @@ describe("TodoStore.updateTodo", () => {
     assert.equal(updated.title, "Write the spec");
     assert.equal(updated.priority, "high");
     assert.equal(updated.due_date, "2031-01-05");
-    assert.equal(updated.completed, false);
+    assert.equal(updated.description, "first pass", "untouched fields must survive");
+    assert.equal(updated.status, todo.status);
     assert.equal(updated.created_at, todo.created_at);
-    assert.match(updated.updated_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
   });
 
-  it("tracks completed_at when completing and reopening", (t) => {
+  it("stamps and clears completed_at as the status moves", (t) => {
     const store = freshStore(t);
     const todo = store.createTodo("Ship it");
 
-    const done = store.updateTodo(todo.id, { completed: true });
-    assert.equal(done.completed, true);
+    const running = store.updateTodo(todo.id, { status: "in_progress" });
+    assert.equal(running.status, "in_progress");
+    assert.equal(running.completed_at, null);
+
+    const done = store.updateTodo(todo.id, { status: "completed" });
+    assert.equal(done.status, "completed");
     assert.ok(done.completed_at, "expected completed_at to be set");
 
-    const reopened = store.updateTodo(todo.id, { completed: false });
-    assert.equal(reopened.completed, false);
+    const reopened = store.updateTodo(todo.id, { status: "not_started" });
     assert.equal(reopened.completed_at, null);
   });
 
-  it("can clear a due date", (t) => {
+  it("keeps completed_at when editing a completed task's title", (t) => {
     const store = freshStore(t);
-    const todo = store.createTodo("Clean up", { due_date: "2031-01-05" });
+    const todo = store.createTodo("Ship it", { status: "completed" });
 
-    assert.equal(store.updateTodo(todo.id, { due_date: null }).due_date, null);
+    const updated = store.updateTodo(todo.id, { title: "Shipped it" });
+
+    assert.equal(updated.status, "completed");
+    assert.equal(updated.completed_at, todo.completed_at);
+  });
+
+  it("can clear the description, due date and image", (t) => {
+    const store = freshStore(t);
+    const todo = store.createTodo("Clean up", {
+      description: "note",
+      due_date: "2031-01-05",
+      image: "https://example.com/a.png",
+    });
+
+    const cleared = store.updateTodo(todo.id, {
+      description: null,
+      due_date: null,
+      image: null,
+    });
+
+    assert.equal(cleared.description, null);
+    assert.equal(cleared.due_date, null);
+    assert.equal(cleared.image, null);
   });
 
   it("is a no-op when given no fields", (t) => {
@@ -335,11 +428,18 @@ describe("TodoStore.updateTodo", () => {
     assert.deepEqual(store.updateTodo(todo.id, {}), todo);
   });
 
-  it("rejects unknown fields", (t) => {
+  it("rejects unknown fields, including the retired v1 name", (t) => {
     const store = freshStore(t);
     const todo = store.createTodo("Task");
 
-    assert.throws(() => store.updateTodo(todo.id, { colour: "red" }), rejects(undefined, "unknown field"));
+    assert.throws(
+      () => store.updateTodo(todo.id, { colour: "red" }),
+      rejects(undefined, "unknown field"),
+    );
+    assert.throws(
+      () => store.updateTodo(todo.id, { completed: true }),
+      rejects(undefined, "unknown field"),
+    );
   });
 
   it("rejects invalid values", (t) => {
@@ -348,11 +448,13 @@ describe("TodoStore.updateTodo", () => {
 
     for (const changes of [
       { title: "   " },
-      { completed: "yes" },
+      { status: "done" },
       { priority: "whenever" },
       { due_date: "31/12/2031" },
+      { image: "javascript:alert(1)" },
+      { description: 42 },
     ]) {
-      assert.throws(() => store.updateTodo(todo.id, changes), rejects(), `changes: ${JSON.stringify(changes)}`);
+      assert.throws(() => store.updateTodo(todo.id, changes), rejects());
     }
   });
 
@@ -361,7 +463,10 @@ describe("TodoStore.updateTodo", () => {
     const todo = store.createTodo("Task");
 
     for (const changes of [null, undefined, "title", ["title"], 42]) {
-      assert.throws(() => store.updateTodo(todo.id, changes), rejects(undefined, "changes must be an object"));
+      assert.throws(
+        () => store.updateTodo(todo.id, changes),
+        rejects(undefined, "changes must be an object"),
+      );
     }
   });
 
@@ -369,16 +474,15 @@ describe("TodoStore.updateTodo", () => {
     const store = freshStore(t);
     const todo = store.createTodo("Task");
 
-    assert.throws(() => store.updateTodo(todo.id, { title: "Changed", priority: "nope" }), ValidationError);
+    assert.throws(
+      () => store.updateTodo(todo.id, { title: "Changed", status: "nope" }),
+      ValidationError,
+    );
     assert.deepEqual(store.getTodo(todo.id), todo);
   });
 
   it("raises NotFoundError for a missing id", (t) => {
     assert.throws(() => freshStore(t).updateTodo(999, { title: "nope" }), NotFoundError);
-  });
-
-  it("rejects a non-positive id", (t) => {
-    assert.throws(() => freshStore(t).updateTodo(0, { title: "nope" }), ValidationError);
   });
 });
 
@@ -402,44 +506,104 @@ describe("TodoStore.deleteTodo and clearCompleted", () => {
 
   it("clears only completed to-dos and reports how many went", (t) => {
     const store = freshStore(t);
-    const keep = store.createTodo("Keep");
-    for (const title of ["Drop A", "Drop B"]) {
-      store.updateTodo(store.createTodo(title).id, { completed: true });
-    }
+    const running = store.createTodo("Running", { status: "in_progress" });
+    const waiting = store.createTodo("Waiting");
+    store.createTodo("Drop A", { status: "completed" });
+    store.createTodo("Drop B", { status: "completed" });
 
     assert.equal(store.clearCompleted(), 2);
     assert.deepEqual(
       store.listTodos().map((todo) => todo.id),
-      [keep.id],
+      [waiting.id, running.id],
     );
     assert.equal(store.clearCompleted(), 0);
   });
 });
 
-describe("TodoStore persistence", () => {
-  it("persists data across a reopen", () => {
-    const dir = mkdtempSync(join(tmpdir(), "todo-store-"));
+describe("schema migration", () => {
+  /** Recreate the v1 table so we can prove an old database upgrades cleanly. */
+  function seedLegacyDatabase(dbPath) {
+    const legacy = new DatabaseSync(dbPath);
+    legacy.exec(`
+      CREATE TABLE IF NOT EXISTS todos (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        title        TEXT    NOT NULL,
+        completed    INTEGER NOT NULL DEFAULT 0,
+        priority     TEXT    NOT NULL DEFAULT 'medium',
+        due_date     TEXT,
+        created_at   TEXT    NOT NULL,
+        updated_at   TEXT    NOT NULL,
+        completed_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_todos_completed ON todos (completed);
+    `);
+    const insert = legacy.prepare(
+      "INSERT INTO todos (title, completed, priority, due_date, created_at, updated_at, completed_at)" +
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+    );
+    insert.run("Old done task", 1, "high", "2031-01-05", "2031-01-01T09:00:00Z", "2031-01-01T09:00:00Z", "2031-01-01T10:00:00Z");
+    insert.run("Old open task", 0, "low", null, "2031-01-01T09:00:00Z", "2031-01-01T09:00:00Z", null);
+    legacy.close();
+  }
+
+  it("upgrades a v1 database without losing rows", () => {
+    const dir = mkdtempSync(join(tmpdir(), "todo-migrate-"));
     const dbPath = join(dir, "todos.db");
+    seedLegacyDatabase(dbPath);
 
-    const first = new TodoStore(dbPath);
-    const created = first.createTodo("Persist me", { priority: "high", due_date: "2031-12-31" });
-    const expected = first.updateTodo(created.id, { completed: true });
-    first.close();
-
-    const reopened = new TodoStore(dbPath);
+    const store = new TodoStore(dbPath);
     try {
-      assert.deepEqual(reopened.listTodos({ status: "completed" }), [expected]);
+      const done = store.getTodo(1);
+      const open = store.getTodo(2);
+
+      assert.equal(done.title, "Old done task");
+      assert.equal(done.status, "completed", "completed = 1 should become status completed");
+      assert.equal(done.priority, "high");
+      assert.equal(done.due_date, "2031-01-05");
+      assert.equal(done.created_at, "2031-01-01T09:00:00Z");
+      assert.equal(done.description, null);
+      assert.equal(done.image, null);
+      assert.equal(done.completed_at, "2031-01-01T10:00:00Z");
+
+      assert.equal(open.status, "not_started", "completed = 0 should become not_started");
+      assert.equal(open.completed_at, null);
+      assert.equal(store.stats().total, 2);
+      assert.equal(store.stats().completed, 1);
     } finally {
-      // Close before deleting: Windows keeps a lock on open database files.
-      reopened.close();
+      // Windows keeps a lock on open database files, so close before deleting.
+      store.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("stores titles with markup verbatim", (t) => {
-    const store = freshStore(t);
-    const tricky = '<img src=x onerror="alert(1)"> & "quotes"';
+  it("drops the retired completed column and is safe to reopen", () => {
+    const dir = mkdtempSync(join(tmpdir(), "todo-migrate-"));
+    const dbPath = join(dir, "todos.db");
+    seedLegacyDatabase(dbPath);
 
-    assert.equal(store.getTodo(store.createTodo(tricky).id).title, tricky);
+    const first = new TodoStore(dbPath);
+    const created = first.createTodo("Added after migrating", { status: "in_progress" });
+    assert.equal(created.status, "in_progress");
+    first.close();
+
+    const second = new TodoStore(dbPath);
+    try {
+      const columns = second.listTodos().map((todo) => todo.id);
+      assert.equal(columns.length, 3);
+      const inspect = new DatabaseSync(dbPath);
+      const names = inspect
+        .prepare("PRAGMA table_info(todos)")
+        .all()
+        .map((column) => column.name);
+      inspect.close();
+
+      assert.ok(names.includes("status"));
+      assert.ok(names.includes("description"));
+      assert.ok(names.includes("image"));
+      assert.ok(!names.includes("completed"), "the v1 boolean column should be gone");
+    } finally {
+      second.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

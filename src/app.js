@@ -12,6 +12,7 @@ import express from "express";
 
 import {
   DEFAULT_PRIORITY,
+  DEFAULT_STATUS,
   NotFoundError,
   STATUS_FILTERS,
   ValidationError,
@@ -58,7 +59,7 @@ export function createApp(store, { publicDir = DEFAULT_PUBLIC_DIR, logRequests =
 
   api.get("/todos", (req, res) => {
     const todos = store.listTodos({
-      status: statusFilter(req.query.status),
+      filter: filterParam(req.query.filter),
       query: searchTerm(req.query.q),
     });
     res.json({ todos });
@@ -71,8 +72,11 @@ export function createApp(store, { publicDir = DEFAULT_PUBLIC_DIR, logRequests =
   api.post("/todos", (req, res) => {
     const body = requireObjectBody(req);
     const todo = store.createTodo(body.title, {
+      description: body.description ?? null,
+      status: body.status ?? DEFAULT_STATUS,
       priority: body.priority ?? DEFAULT_PRIORITY,
       due_date: body.due_date ?? null,
+      image: body.image ?? null,
     });
     res.status(201).location(`/api/todos/${todo.id}`).json({ todo });
   });
@@ -103,7 +107,11 @@ export function createApp(store, { publicDir = DEFAULT_PUBLIC_DIR, logRequests =
     return res.status(404).json({ error: `unknown endpoint: ${req.originalUrl}` });
   });
 
-  app.use(express.static(publicDir));
+  // `publicDir: null` turns static serving off, which is how the Vercel
+  // function runs: there the platform serves the built dashboard itself.
+  if (publicDir !== null) {
+    app.use(express.static(publicDir));
+  }
 
   app.use((req, res) => {
     res.status(404).type("text/plain").send("Not found");
@@ -153,12 +161,13 @@ function lastQueryValue(value) {
   return value === undefined ? "" : String(value);
 }
 
-function statusFilter(value) {
-  const status = lastQueryValue(value) || "all";
-  if (!STATUS_FILTERS.includes(status)) {
-    throw new ValidationError(`status must be one of: ${STATUS_FILTERS.join(", ")}`);
+/** The list is narrowed by `filter`; `status` is a field of a task, not a query flag. */
+function filterParam(value) {
+  const filter = lastQueryValue(value) || "all";
+  if (!STATUS_FILTERS.includes(filter)) {
+    throw new ValidationError(`filter must be one of: ${STATUS_FILTERS.join(", ")}`);
   }
-  return status;
+  return filter;
 }
 
 function searchTerm(value) {

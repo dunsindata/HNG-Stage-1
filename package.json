@@ -6,12 +6,12 @@
   "type": "module",
   "main": "src/index.js",
   "engines": {
-    "node": ">=22.5"
+    "node": "24.x"
   },
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node --test test/store.test.js test/api.test.js",
+    "test": "node --test test/store.test.js test/api.test.js test/vercel.test.js",
     "web:install": "npm --prefix web install",
     "web:dev": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",

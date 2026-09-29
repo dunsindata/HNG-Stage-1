@@ -15,9 +15,11 @@ import type { Todo } from "./types";
 const TODO: Todo = {
   id: 1,
   title: "Buy milk",
-  completed: false,
+  description: "Two litres, semi-skimmed",
+  status: "not_started",
   priority: "medium",
   due_date: null,
+  image: null,
   created_at: "2031-01-15T09:00:00Z",
   updated_at: "2031-01-15T09:00:00Z",
   completed_at: null,
@@ -52,35 +54,38 @@ describe("fetchTodos", () => {
   it("asks for the plain list when unfiltered", async () => {
     const mock = stubFetch(async () => jsonResponse({ todos: [TODO] }));
 
-    const todos = await fetchTodos({ status: "all", query: "" });
+    const todos = await fetchTodos({ filter: "all", query: "" });
 
     expect(firstUrl(mock)).toBe("/api/todos");
     expect(todos).toHaveLength(1);
     expect(todos[0]?.title).toBe("Buy milk");
+    expect(todos[0]?.status).toBe("not_started");
   });
 
-  it("encodes the status filter and search term", async () => {
+  it("encodes the state filter and search term", async () => {
     const mock = stubFetch(async () => jsonResponse({ todos: [] }));
 
-    await fetchTodos({ status: "completed", query: "milk & bread" });
+    await fetchTodos({ filter: "in_progress", query: "milk & bread" });
 
-    expect(firstUrl(mock)).toBe("/api/todos?status=completed&q=milk+%26+bread");
+    expect(firstUrl(mock)).toBe("/api/todos?filter=in_progress&q=milk+%26+bread");
   });
 
   it("rejects when the server sends an error payload", async () => {
-    stubFetch(async () => jsonResponse({ error: "status must be one of: all, active, completed" }, 400));
+    stubFetch(async () =>
+      jsonResponse({ error: "filter must be one of: all, not_started, in_progress, completed, open" }, 400),
+    );
 
-    await expect(fetchTodos({ status: "all", query: "" })).rejects.toMatchObject({
+    await expect(fetchTodos({ filter: "all", query: "" })).rejects.toMatchObject({
       name: "ApiError",
       status: 400,
-      message: "status must be one of: all, active, completed",
+      message: "filter must be one of: all, not_started, in_progress, completed, open",
     });
   });
 
   it("rejects a list payload it cannot understand", async () => {
     stubFetch(async () => jsonResponse({ nope: true }));
 
-    await expect(fetchTodos({ status: "all", query: "" })).rejects.toBeInstanceOf(ApiError);
+    await expect(fetchTodos({ filter: "all", query: "" })).rejects.toBeInstanceOf(ApiError);
   });
 
   it("explains a connection failure", async () => {
@@ -88,7 +93,7 @@ describe("fetchTodos", () => {
       throw new TypeError("Failed to fetch");
     });
 
-    await expect(fetchTodos({ status: "all", query: "" })).rejects.toMatchObject({
+    await expect(fetchTodos({ filter: "all", query: "" })).rejects.toMatchObject({
       status: 0,
       message: "Could not reach the server — is it still running?",
     });
@@ -96,35 +101,57 @@ describe("fetchTodos", () => {
 });
 
 describe("fetchStats", () => {
-  it("reads the counters", async () => {
-    stubFetch(async () => jsonResponse({ total: 3, active: 2, completed: 1 }));
+  it("reads the per-state counters", async () => {
+    stubFetch(async () =>
+      jsonResponse({ total: 4, completed: 1, in_progress: 1, not_started: 2, open: 3 }),
+    );
 
-    await expect(fetchStats()).resolves.toEqual({ total: 3, active: 2, completed: 1 });
+    await expect(fetchStats()).resolves.toEqual({
+      total: 4,
+      completed: 1,
+      in_progress: 1,
+      not_started: 2,
+      open: 3,
+    });
   });
 });
 
 describe("mutations", () => {
-  it("POSTs the draft as JSON", async () => {
+  it("POSTs the whole draft as JSON", async () => {
     const mock = stubFetch(async () => jsonResponse({ todo: TODO }, 201));
 
-    const created = await createTodo({ title: "Buy milk", priority: "high", due_date: "2031-02-01" });
+    const created = await createTodo({
+      title: "Buy milk",
+      description: "Two litres",
+      status: "in_progress",
+      priority: "high",
+      due_date: "2031-02-01",
+      image: "/images/milk.png",
+    });
 
     expect(mock.mock.calls[0]?.[1]).toMatchObject({
       method: "POST",
-      body: JSON.stringify({ title: "Buy milk", priority: "high", due_date: "2031-02-01" }),
+      body: JSON.stringify({
+        title: "Buy milk",
+        description: "Two litres",
+        status: "in_progress",
+        priority: "high",
+        due_date: "2031-02-01",
+        image: "/images/milk.png",
+      }),
     });
     expect(created.id).toBe(1);
   });
 
   it("PATCHes only the requested fields", async () => {
-    const mock = stubFetch(async () => jsonResponse({ todo: { ...TODO, completed: true } }));
+    const mock = stubFetch(async () => jsonResponse({ todo: { ...TODO, status: "completed" } }));
 
-    await patchTodo(7, { completed: true });
+    await patchTodo(7, { status: "completed" });
 
     expect(String(mock.mock.calls[0]?.[0])).toBe("/api/todos/7");
     expect(mock.mock.calls[0]?.[1]).toMatchObject({
       method: "PATCH",
-      body: JSON.stringify({ completed: true }),
+      body: JSON.stringify({ status: "completed" }),
     });
   });
 
