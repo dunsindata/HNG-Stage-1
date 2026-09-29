@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="A small, dependency-free to-do list web app." />
+    <title>Tasks</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <main class="app">
+      <header class="app__header">
+        <div>
+          <h1 class="app__title">Tasks</h1>
+          <p class="app__summary" id="summary" aria-live="polite">Loading tasks…</p>
+        </div>
+        <button type="button" class="ghost-button" id="clear-completed" disabled>
+          Clear completed
+        </button>
+      </header>
+
+      <form class="composer" id="composer" autocomplete="off">
+        <input
+          class="composer__title"
+          id="title"
+          name="title"
+          type="text"
+          maxlength="200"
+          placeholder="What needs doing?"
+          aria-label="Task title"
+          required
+        />
+        <select class="composer__field" id="priority" name="priority" aria-label="Priority">
+          <option value="low">Low priority</option>
+          <option value="medium" selected>Medium priority</option>
+          <option value="high">High priority</option>
+        </select>
+        <input
+          class="composer__field"
+          id="due-date"
+          name="due_date"
+          type="date"
+          aria-label="Due date"
+        />
+        <button type="submit" class="primary-button">Add task</button>
+      </form>
+
+      <div class="toolbar">
+        <div class="filters" role="group" aria-label="Filter tasks">
+          <button type="button" class="filter" data-status="all" aria-pressed="true">
+            All <span class="filter__count" data-count="total">0</span>
+          </button>
+          <button type="button" class="filter" data-status="active" aria-pressed="false">
+            Active <span class="filter__count" data-count="active">0</span>
+          </button>
+          <button type="button" class="filter" data-status="completed" aria-pressed="false">
+            Completed <span class="filter__count" data-count="completed">0</span>
+          </button>
+        </div>
+        <input
+          class="search"
+          id="search"
+          type="search"
+          maxlength="200"
+          placeholder="Search tasks"
+          aria-label="Search tasks"
+        />
+      </div>
+
+      <p class="alert" id="alert" role="alert" hidden></p>
+
+      <ul class="tasks" id="tasks"></ul>
+      <p class="empty" id="empty" hidden>No tasks yet — add your first one above.</p>
+
+      <footer class="app__footer">
+        <span>Stored locally in SQLite.</span>
+        <span>Press <kbd>Enter</kbd> to save, <kbd>Esc</kbd> to cancel an edit.</span>
+      </footer>
+    </main>
+
+    <template id="task-template">
+      <li class="task">
+        <input class="task__toggle" type="checkbox" aria-label="Mark task complete" />
+        <div class="task__body">
+          <p class="task__title"></p>
+          <div class="task__meta">
+            <span class="badge badge--priority"></span>
+            <span class="badge badge--due" hidden></span>
+          </div>
+        </div>
+        <div class="task__actions">
+          <button type="button" class="icon-button" data-action="edit">Edit</button>
+          <button type="button" class="icon-button icon-button--danger" data-action="delete">
+            Delete
+          </button>
+        </div>
+      </li>
+    </template>
+  </body>
+</html>
