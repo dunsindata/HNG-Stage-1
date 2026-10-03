@@ -1,24 +1,30 @@
 {
-  "name": "todo-list-webapp",
-  "version": "2.0.0",
+  "name": "hng-stage-1-ecommerce",
+  "version": "0.1.0",
   "private": true,
-  "description": "A to-do list web app: Express + SQLite API with a React + TypeScript UI.",
-  "type": "module",
-  "engines": {
-    "node": "24.x"
-  },
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "node --watch src/index.js",
-    "test": "node --test test/store.test.js test/api.test.js test/vercel.test.js",
-    "web:install": "npm --prefix web install",
-    "web:dev": "npm --prefix web run dev",
-    "web:build": "npm --prefix web run build",
-    "web:test": "npm --prefix web run test",
-    "web:typecheck": "npm --prefix web run typecheck"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint"
   },
   "dependencies": {
-    "express": "^5.2.1"
+    "@supabase/ssr": "^0.12.7",
+    "@supabase/supabase-js": "^2.117.2",
+    "lucide-react": "^1.49.0",
+    "next": "16.3.8",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "zod": "^4.6.5"
   },
-  "license": "MIT"
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.8",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
 }
